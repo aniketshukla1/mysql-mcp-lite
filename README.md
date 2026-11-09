@@ -148,3 +148,7 @@ uv run --script test_e2e.py
 ```
 
 Starts `mysql_mcp_lite.py` over stdio the way an agent does, then checks the 4 tools, the `/mysql` prompt, each read-only layer, write mode and truncation against a real MySQL.
+
+## License
+
+[MIT](LICENSE)
