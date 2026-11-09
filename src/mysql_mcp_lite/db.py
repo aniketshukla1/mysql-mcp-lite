@@ -1,22 +1,15 @@
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["mcp>=2.3,<3", "pymysql>=1.1"]
-# ///
-"""MySQL MCP server for any MCP client (stdio): list databases/tables, show table DDL, run SQL, /mysql prompt."""
+"""Shared core for the MCP server and the CLI: connection, read-only guard, compact results."""
 
 import json
 import os
 import re
 
 import pymysql
-from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError  # the only exception whose text reaches the model
-from mcp.types import ToolAnnotations
+from mcp.server.mcpserver.exceptions import ToolError
 
 ALLOW_WRITE = os.getenv("MYSQL_ALLOW_WRITE", "").lower() in ("1", "true", "yes")
 MAX_ROWS = int(os.getenv("MYSQL_MAX_ROWS", "500"))
 TIMEOUT_MS = int(os.getenv("MYSQL_TIMEOUT_MS", "30000"))
-READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
 # Read-only mode has three layers. These checks reject the obvious; the server-side
 # READ ONLY transaction blocks DML they miss; a SELECT-only MySQL user is the real boundary.
@@ -24,11 +17,9 @@ READ_KEYWORDS = {"select", "show", "describe", "desc", "explain", "with", "table
 COMMENTS = re.compile(r"/\*.*?\*/|(?:--\s|#)[^\n]*", re.S)
 FILE_WRITE = re.compile(r"outfile|dumpfile", re.I)  # raw substring: comments can't split a keyword
 
-mcp = MCPServer(
-    "mysql",
-    instructions="Explore a MySQL database: list_databases -> list_tables -> describe_table, then query. "
-    + ("Writes are enabled." if ALLOW_WRITE else "Read-only: only SELECT/SHOW/DESCRIBE/EXPLAIN/WITH run."),
-)
+
+class QueryError(ToolError):
+    """A failure the caller must read. MCP passes a ToolError's text to the model; the CLI prints it."""
 
 
 def connect(database: str | None = None) -> pymysql.Connection:
@@ -63,18 +54,18 @@ def run(sql: str, args=None, database: str | None = None, read_only: bool = True
                 }
             conn.rollback() if read_only else conn.commit()
             return result
-    except pymysql.MySQLError as e:  # syntax errors, unknown tables, bad credentials: the model needs the text
-        raise ToolError(f"MySQL error {e}") from e
+    except pymysql.MySQLError as e:  # syntax errors, unknown tables, bad credentials: the caller needs the text
+        raise QueryError(f"MySQL error {e}") from e
 
 
 def check_read_only(sql: str) -> None:
     words = COMMENTS.sub(" ", sql).split()
     first = words[0].lower().rstrip("(") if words else ""
     if first not in READ_KEYWORDS:
-        raise ToolError(f"Read-only server: '{first or sql[:20]}' statements are not allowed. "
-                        "Start the server with MYSQL_ALLOW_WRITE=true to enable writes.")
+        raise QueryError(f"Read-only: '{first or sql[:20]}' statements are not allowed. "
+                         "Set MYSQL_ALLOW_WRITE=true to enable writes.")
     if FILE_WRITE.search(sql):
-        raise ToolError("Read-only server: INTO OUTFILE/DUMPFILE is not allowed.")
+        raise QueryError("Read-only: INTO OUTFILE/DUMPFILE is not allowed.")
 
 
 def ident(name: str) -> str:
@@ -84,24 +75,22 @@ def ident(name: str) -> str:
 def pick_db(database: str | None) -> str:
     db = database or os.getenv("MYSQL_DATABASE")
     if not db:
-        raise ToolError("No database given: pass `database` or set MYSQL_DATABASE.")
+        raise QueryError("No database given: pass a database or set MYSQL_DATABASE.")
     return db
 
 
 def compact(result: dict) -> str:
-    # One compact JSON text block. The SDK's default for a dict is indent=2: ~1.8x the tokens.
+    # One compact JSON string. Indented JSON costs a model ~1.8x the tokens.
     return json.dumps(result, default=str, separators=(",", ":"), ensure_ascii=False)
 
 
-@mcp.tool(annotations=READ_ONLY, structured_output=False)
+# The four operations both front ends expose, each returning what the caller prints or sends.
+
 def list_databases() -> str:
-    """List the databases visible to the configured MySQL user."""
     return compact(run("SHOW DATABASES"))
 
 
-@mcp.tool(annotations=READ_ONLY, structured_output=False)
 def list_tables(database: str | None = None) -> str:
-    """List tables and views in a database (default: MYSQL_DATABASE), with approximate row counts."""
     return compact(run(
         "SELECT table_name, table_type, table_rows, table_comment FROM information_schema.tables "
         "WHERE table_schema = %s ORDER BY table_name",
@@ -109,38 +98,11 @@ def list_tables(database: str | None = None) -> str:
     ))
 
 
-@mcp.tool(annotations=READ_ONLY, structured_output=False)
 def describe_table(table: str, database: str | None = None) -> str:
-    """Return the CREATE TABLE statement: columns, types, indexes and foreign keys."""
     return run(f"SHOW CREATE TABLE {ident(pick_db(database))}.{ident(table)}")["rows"][0][1]
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=not ALLOW_WRITE, destructiveHint=ALLOW_WRITE),
-          structured_output=False)
 def query(sql: str, database: str | None = None) -> str:
-    """Run one SQL statement. Returns JSON {columns, rows, truncated}: at most MYSQL_MAX_ROWS rows,
-    `truncated` true when cut; writes return {rows_affected, last_insert_id}.
-    Read-only (SELECT/SHOW/DESCRIBE/EXPLAIN/WITH) unless the server runs with MYSQL_ALLOW_WRITE=true."""
     if not ALLOW_WRITE:
         check_read_only(sql)
     return compact(run(sql, database=database, read_only=not ALLOW_WRITE))
-
-
-@mcp.prompt(name="mysql", description="Ask about the database in plain words; the agent explores the schema and runs SQL.")
-def mysql_prompt(question: str = "") -> str:
-    ask = question.strip() or "Give me an overview of this database: its tables and what each one holds."
-    return (
-        f"{ask}\n\n"
-        "Answer with this server's MySQL tools: list_tables (list_databases if the database is unclear), "
-        "describe_table for every table you will query (never guess column names), then the smallest query "
-        "that answers it (only the columns needed, LIMIT when listing rows). Reply in plain words first, "
-        "then show the SQL you ran, and say so if a result came back truncated."
-    )
-
-
-def main() -> None:  # the `mysql-mcp-lite` command
-    mcp.run()
-
-
-if __name__ == "__main__":
-    main()

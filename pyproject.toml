@@ -1,18 +1,22 @@
 [project]
 name = "mysql-mcp-lite"
-version = "0.1.0"
-description = "MCP server for MySQL: browse schemas and run read-only SQL from any MCP client"
+version = "0.2.0"
+description = "MySQL for AI agents: an MCP server and a shell command, read-only by default"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["mcp>=2.3,<3", "pymysql>=1.1"]  # keep in sync with the script header in mysql_mcp_lite.py
+dependencies = ["mcp>=2.3,<3", "pymysql>=1.1"]
+keywords = ["mcp", "mysql", "ai-agents", "agent-skills", "model-context-protocol"]
+
+[project.urls]
+Repository = "https://github.com/aniketshukla1/mysql-mcp-lite"
 
 [project.scripts]
-mysql-mcp-lite = "mysql_mcp_lite:main"
+mysql-mcp-lite = "mysql_mcp_lite.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["mysql_mcp_lite.py"]
+packages = ["src/mysql_mcp_lite"]

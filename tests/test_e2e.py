@@ -1,19 +1,16 @@
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["mcp>=2.3,<3", "pymysql>=1.1"]
-# ///
-"""End-to-end check: real MySQL <- mysql_mcp_lite.py (spawned over stdio, as any MCP client would) <- MCP client.
+"""End-to-end check against a real MySQL: the MCP server over stdio (as an agent runs it),
+and the shell commands the skill runs.
 
-Defaults target a throwaway container:
+Needs a throwaway MySQL:
   docker run -d --name mysql-mcp-test -e MYSQL_ROOT_PASSWORD=testroot -p 127.0.0.1:33306:3306 mysql:8.4
-Run: uv run --script test_e2e.py   (override with MYSQL_HOST/PORT/USER/PASSWORD)
+Run from the repo root: uv run tests/test_e2e.py   (override with MYSQL_HOST/PORT/USER/PASSWORD)
 """
 
 import asyncio
 import json
 import os
-import shutil
-from pathlib import Path
+import subprocess
+import sys
 
 import pymysql
 from mcp import Client, StdioServerParameters
@@ -24,7 +21,6 @@ DB = {
     "MYSQL_USER": os.getenv("MYSQL_USER", "root"),
     "MYSQL_PASSWORD": os.getenv("MYSQL_PASSWORD", "testroot"),
 }
-SERVER = str(Path(__file__).with_name("mysql_mcp_lite.py"))
 
 
 def seed() -> None:
@@ -38,11 +34,19 @@ def seed() -> None:
         cur.execute("INSERT INTO mcp_e2e.orders (item, price) VALUES ('apple', 1.50), ('banana', 0.25), ('cherry', 4.00)")
 
 
+def env(**extra: str) -> dict:
+    # Inherit the shell env minus any MYSQL_* so the test fully controls the config.
+    base = {k: v for k, v in os.environ.items() if not k.startswith("MYSQL_")}
+    return base | DB | {"MYSQL_DATABASE": "mcp_e2e"} | extra
+
+
 def server(**extra: str) -> StdioServerParameters:
-    # Inherit the shell env minus any MYSQL_* so the test fully controls the server's config.
-    env = {k: v for k, v in os.environ.items() if not k.startswith("MYSQL_")}
-    env |= DB | {"MYSQL_DATABASE": "mcp_e2e"} | extra
-    return StdioServerParameters(command=shutil.which("uv"), args=["run", "--quiet", "--script", SERVER], env=env)
+    return StdioServerParameters(command=sys.executable, args=["-m", "mysql_mcp_lite"], env=env(**extra))
+
+
+def cli(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-m", "mysql_mcp_lite", *args], input=stdin,
+                          capture_output=True, text=True, env=env(), timeout=60)
 
 
 async def ok(c: Client, tool: str, **args):
@@ -95,6 +99,18 @@ async def main() -> None:
         await fails(c, "describe_table", "doesn't exist", table="nope")
         assert (await ok(c, "query", sql="SELECT COUNT(*) FROM orders"))["rows"] == [[3]]
 
+    # The skill's path: the same operations as shell commands, no MCP involved.
+    r = cli("databases")
+    assert r.returncode == 0 and ["mcp_e2e"] in json.loads(r.stdout)["rows"], r
+    r = cli("tables")
+    assert r.returncode == 0 and json.loads(r.stdout)["rows"][0][0] == "orders", r
+    r = cli("describe", "orders")
+    assert r.returncode == 0 and "CREATE TABLE `orders`" in r.stdout, r
+    r = cli("query", stdin="SELECT item FROM orders WHERE item LIKE 'b%'")  # SQL on stdin, as from a heredoc
+    assert r.returncode == 0 and json.loads(r.stdout)["rows"] == [["banana"]], r
+    r = cli("query", "DELETE FROM orders")
+    assert r.returncode == 1 and "not allowed" in r.stderr, r
+
     async with Client(server(MYSQL_ALLOW_WRITE="true", MYSQL_MAX_ROWS="2")) as c:
         tools = {t.name: t for t in (await c.list_tools()).tools}
         assert tools["query"].annotations.destructive_hint is True
@@ -103,7 +119,7 @@ async def main() -> None:
         r = await ok(c, "query", sql="SELECT item FROM orders ORDER BY id")
         assert r["rows"] == [["apple"], ["banana"]] and r["truncated"] is True, r
 
-    print("e2e OK: 4 tools + /mysql prompt over stdio, read-only guards (3 layers), writes, truncation")
+    print("e2e OK: MCP (4 tools, /mysql prompt, read-only guards, writes, truncation) + the skill's shell commands")
 
 
 if __name__ == "__main__":

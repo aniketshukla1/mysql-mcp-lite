@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="t">
+  <title id="t">mysql-mcp-lite</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1E3A8A"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="54" cy="36" rx="26" ry="9"/>
+    <path d="M28 36v48c0 5 11.6 9 26 9s26-4 26-9V36"/>
+    <path d="M28 60c0 5 11.6 9 26 9s26-4 26-9"/>
+  </g>
+  <circle cx="92" cy="90" r="22" fill="#F59E0B" stroke="#FFFFFF" stroke-width="5"/>
+  <path d="M96 74 L83 93 H92 L88 106 L101 87 H92 Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round"/>
+</svg>
